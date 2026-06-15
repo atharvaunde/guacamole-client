@@ -104,10 +104,9 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
 
       - name: Publish to npm with provenance
         if: steps.gate.outputs.publish == 'true' && steps.check_npm.outputs.skip == 'false'
         working-directory: guacamole-common-js-npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
