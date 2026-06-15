@@ -1,0 +1,100 @@
+name: Nightly npm publish
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC every night
+  workflow_dispatch:        # allow manual trigger
+
+permissions:
+  contents: write           # needed to push sync commits
+  id-token: write           # needed for npm provenance (OIDC)
+
+jobs:
+  sync-and-publish:
+    name: Sync upstream → build → publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/apache/guacamole-client.git
+          git fetch upstream
+
+      - name: Merge upstream main into fork
+        id: sync
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BEFORE=$(git rev-parse HEAD)
+          git merge --no-edit upstream/main || {
+            echo "Merge conflict — aborting sync, skipping publish"
+            git merge --abort
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          AFTER=$(git rev-parse HEAD)
+
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes."
+          else
+            git push origin main
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read current package version
+        if: steps.sync.outputs.changed == 'true'
+        id: version
+        run: |
+          VERSION=$(grep -m1 '"version"' guacamole-common-js-npm/package.json | sed 's/.*"\([0-9.]*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this version is already published
+        if: steps.sync.outputs.changed == 'true'
+        id: check_npm
+        run: |
+          PUBLISHED=$(npm view guacamole-js-sdk@${{ steps.version.outputs.version }} version 2>/dev/null || echo "")
+          if [ -n "$PUBLISHED" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${{ steps.version.outputs.version }} already on npm — skipping publish."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Docker image from updated Dockerfile
+        if: steps.sync.outputs.changed == 'true' && steps.check_npm.outputs.skip == 'false'
+        run: |
+          docker build --pull --no-cache --force-rm -t guacamole-build:local .
+
+      - name: Extract JS bundle from built image
+        if: steps.sync.outputs.changed == 'true' && steps.check_npm.outputs.skip == 'false'
+        run: |
+          cid=$(docker create guacamole-build:local)
+          docker cp "$cid:/opt/guacamole/webapp/guacamole.war" guacamole.war
+          docker rm "$cid"
+
+          mkdir -p guacamole-common-js-npm/dist
+          unzip -q guacamole.war -d war-contents
+          cp war-contents/guacamole-common-js/all.js     guacamole-common-js-npm/dist/all.js
+          cp war-contents/guacamole-common-js/all.min.js guacamole-common-js-npm/dist/all.min.js
+
+      - name: Set up Node.js
+        if: steps.sync.outputs.changed == 'true' && steps.check_npm.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm with provenance
+        if: steps.sync.outputs.changed == 'true' && steps.check_npm.outputs.skip == 'false'
+        working-directory: guacamole-common-js-npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

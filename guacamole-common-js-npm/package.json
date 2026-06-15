@@ -1,0 +1,17 @@
+{
+  "name": "guacamole-js-sdk",
+  "version": "1.6.1",
+  "description": "Apache Guacamole JavaScript client library",
+  "main": "index.js",
+  "browser": "dist/all.js",
+  "files": [
+    "dist/",
+    "index.js",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apache/guacamole-client"
+  }
+}
